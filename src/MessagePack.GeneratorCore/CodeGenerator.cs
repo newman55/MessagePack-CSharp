@@ -66,6 +66,7 @@ namespace MessagePackCompiler
                 {
                     // SingleFile Output
                     var objectFormatterTemplates = objectInfo
+                        .Where(x => x.CustomFormatterName == null)
                         .Concat(unboundGenericInfo)
                         .GroupBy(x => x.Namespace)
                         .Select(x => new FormatterTemplate()
@@ -76,6 +77,7 @@ namespace MessagePackCompiler
                         .ToArray();
 
                     var enumFormatterTemplates = enumInfo
+                        .Where(x => x.CustomFormatterName == null)
                         .GroupBy(x => x.Namespace)
                         .Select(x => new EnumTemplate()
                         {
@@ -85,6 +87,7 @@ namespace MessagePackCompiler
                         .ToArray();
 
                     var unionFormatterTemplates = unionInfo
+                        .Where(x => x.CustomFormatterName == null)
                         .GroupBy(x => x.Namespace)
                         .Select(x => new UnionTemplate()
                         {
@@ -140,6 +143,11 @@ namespace MessagePackCompiler
                     // Multiple File output
                     foreach (var x in objectInfo.Concat(unboundGenericInfo))
                     {
+                        if (x.CustomFormatterName != null)
+                        {
+                            continue;
+                        }
+
                         var template = new FormatterTemplate()
                         {
                             Namespace = namespaceDot + "Formatters" + ((x.Namespace == null) ? string.Empty : "." + x.Namespace),
@@ -152,6 +160,11 @@ namespace MessagePackCompiler
 
                     foreach (var x in enumInfo)
                     {
+                        if (x.CustomFormatterName != null)
+                        {
+                            continue;
+                        }
+
                         var template = new EnumTemplate()
                         {
                             Namespace = namespaceDot + "Formatters" + ((x.Namespace == null) ? string.Empty : "." + x.Namespace),
@@ -164,6 +177,11 @@ namespace MessagePackCompiler
 
                     foreach (var x in unionInfo)
                     {
+                        if (x.CustomFormatterName != null)
+                        {
+                            continue;
+                        }
+
                         var template = new UnionTemplate()
                         {
                             Namespace = namespaceDot + "Formatters" + ((x.Namespace == null) ? string.Empty : "." + x.Namespace),

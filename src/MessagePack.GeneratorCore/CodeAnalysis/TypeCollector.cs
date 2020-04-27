@@ -6,7 +6,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.Serialization.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 
 namespace MessagePackCompiler.CodeAnalysis
@@ -14,6 +16,14 @@ namespace MessagePackCompiler.CodeAnalysis
     public class MessagePackGeneratorResolveFailedException : Exception
     {
         public MessagePackGeneratorResolveFailedException(string message)
+            : base(message)
+        {
+        }
+    }
+
+    public class MessagePackGeneratorFormatterBindingException : Exception
+    {
+        public MessagePackGeneratorFormatterBindingException(string message)
             : base(message)
         {
         }
@@ -91,7 +101,7 @@ namespace MessagePackCompiler.CodeAnalysis
             }
 
             MessagePackFormatterAttribute = compilation.GetTypeByMetadataName("MessagePack.MessagePackFormatterAttribute");
-            if (IMessagePackSerializationCallbackReceiver == null)
+            if (MessagePackFormatterAttribute == null)
             {
                 throw new InvalidOperationException("failed to get metadata of MessagePack.MessagePackFormatterAttribute");
             }
@@ -272,12 +282,48 @@ namespace MessagePackCompiler.CodeAnalysis
         private List<UnionSerializationInfo> collectedUnionInfo;
         private List<ObjectSerializationInfo> collectedUnboundGenericInfo;
 
+        private Dictionary<string, string> customFormatters;
+
         public TypeCollector(Compilation compilation, bool disallowInternal, bool isForceUseMap, Action<string> logger)
         {
             this.logger = logger;
             this.typeReferences = new ReferenceSymbols(compilation, logger);
             this.disallowInternal = disallowInternal;
             this.isForceUseMap = isForceUseMap;
+            this.customFormatters = new Dictionary<string, string>();
+
+            var formatterBindingFields = compilation.GetNamedTypeSymbols()
+                .Where(x => x.Name == "MessagePackGenerator")
+                .SelectMany(x => x.GetMembers().OfType<IFieldSymbol>().Where(y => y.Name == "FormatterBindings"))
+                .Where(x => x.IsConst && x.Type.SpecialType == SpecialType.System_String && x.HasConstantValue)
+                .ToArray();
+
+            foreach (var f in formatterBindingFields)
+            {
+                logger("Parse formatter bindings");
+                var jsonReader = JsonReaderWriterFactory.CreateJsonReader(Encoding.UTF8.GetBytes((f.ConstantValue as string).Replace("'", "\"")), new System.Xml.XmlDictionaryReaderQuotas());
+                var xe = System.Xml.Linq.XElement.Load(jsonReader);
+                foreach (var el in xe.Elements())
+                {
+                    if (el.HasElements)
+                    {
+                        var elements = el.Elements();
+                        if (elements.Count() != 2)
+                        {
+                            throw new MessagePackGeneratorFormatterBindingException("Wrong fields count, should be 2.");
+                        }
+
+                        var objectType = elements.First().Value;
+                        if (customFormatters.ContainsKey(objectType))
+                        {
+                            throw new MessagePackGeneratorFormatterBindingException($"Type {objectType} duplicate found.");
+                        }
+
+                        var formatterType = elements.Last().Value;
+                        customFormatters.Add(objectType, formatterType);
+                    }
+                }
+            }
 
             targetTypes = compilation.GetNamedTypeSymbols()
                 .Where(x =>
@@ -562,11 +608,31 @@ namespace MessagePackCompiler.CodeAnalysis
                 formatterBuilder.Append(type.Name + "Formatter");
                 formatterBuilder.Append("<" + string.Join(", ", type.TypeArguments) + ">");
 
+                var customFormatter = (type.GetAttributes().FirstOrDefault(x => x.AttributeClass.ApproximatelyEqual(this.typeReferences.MessagePackFormatterAttribute))?.ConstructorArguments[0].Value as INamedTypeSymbol)?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                if (customFormatter == null)
+                {
+                    if (customFormatters.TryGetValue(genericTypeString, out customFormatter))
+                    {
+                        if (!customFormatter.StartsWith("global::"))
+                        {
+                            customFormatter = "global::" + customFormatter;
+                        }
+
+                        var typeArgs = string.Join(", ", type.TypeArguments.Select(x => x.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+                        customFormatter = customFormatter.Replace("TREPLACE", typeArgs);
+                    }
+                }
+                else
+                {
+                    var typeArgs = string.Join(", ", type.TypeArguments.Select(x => x.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+                    customFormatter = new Regex("<[,]*>$").Replace(customFormatter, "<" + typeArgs + ">");
+                }
+
                 GenericSerializationInfo info = new GenericSerializationInfo
                 {
                     FullName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-
                     FormatterName = formatterBuilder.ToString(),
+                    CustomFormatterName = customFormatter,
                 };
 
                 this.collectedGenericInfo.Add(info);
@@ -583,8 +649,20 @@ namespace MessagePackCompiler.CodeAnalysis
         {
             var isClass = !type.IsValueType;
 
+            var customFormatter = (type.GetAttributes().FirstOrDefault(x => x.AttributeClass.ApproximatelyEqual(this.typeReferences.MessagePackFormatterAttribute))?.ConstructorArguments[0].Value as INamedTypeSymbol)?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (customFormatter == null)
+            {
+                if (customFormatters.TryGetValue(type.ToDisplayString(), out customFormatter))
+                {
+                    if (!customFormatter.StartsWith("global::"))
+                    {
+                        customFormatter = "global::" + customFormatter;
+                    }
+                }
+            }
+
             AttributeData contractAttr = type.GetAttributes().FirstOrDefault(x => x.AttributeClass.ApproximatelyEqual(this.typeReferences.MessagePackObjectAttribute));
-            if (contractAttr == null)
+            if (contractAttr == null && customFormatter == null)
             {
                 throw new MessagePackGeneratorResolveFailedException("Serialization Object must mark MessagePackObjectAttribute." + " type: " + type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
             }
@@ -593,7 +671,7 @@ namespace MessagePackCompiler.CodeAnalysis
             var intMembers = new Dictionary<int, MemberSerializationInfo>();
             var stringMembers = new Dictionary<string, MemberSerializationInfo>();
 
-            if (this.isForceUseMap || (bool)contractAttr.ConstructorArguments[0].Value)
+            if (this.isForceUseMap || (contractAttr != null && (bool)contractAttr.ConstructorArguments[0].Value))
             {
                 // All public members are serialize target except [Ignore] member.
                 isIntKey = false;
@@ -668,7 +746,7 @@ namespace MessagePackCompiler.CodeAnalysis
                     this.CollectCore(item.Type); // recursive collect
                 }
             }
-            else
+            else if (customFormatter == null)
             {
                 // Only KeyAttribute members
                 var searchFirst = true;
@@ -995,6 +1073,7 @@ namespace MessagePackCompiler.CodeAnalysis
                 HasIMessagePackSerializationCallbackReceiver = hasSerializationConstructor,
                 NeedsCastOnAfter = needsCastOnAfter,
                 NeedsCastOnBefore = needsCastOnBefore,
+                CustomFormatterName = customFormatter,
             };
 
             return info;

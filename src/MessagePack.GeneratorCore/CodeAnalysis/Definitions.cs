@@ -16,6 +16,8 @@ namespace MessagePackCompiler.CodeAnalysis
         string FullName { get; }
 
         string FormatterName { get; }
+
+        string CustomFormatterName { get; }
     }
 
     public class ObjectSerializationInfo : IResolverRegisterInfo
@@ -53,6 +55,8 @@ namespace MessagePackCompiler.CodeAnalysis
         public bool NeedsCastOnAfter { get; set; }
 
         public string FormatterName => (this.Namespace == null ? this.Name : this.Namespace + "." + this.Name) + "Formatter";
+
+        public string CustomFormatterName { get; set; }
 
         public int WriteCount
         {
@@ -174,6 +178,8 @@ namespace MessagePackCompiler.CodeAnalysis
         public string UnderlyingType { get; set; }
 
         public string FormatterName => (this.Namespace == null ? this.Name : this.Namespace + "." + this.Name) + "Formatter";
+
+        public string CustomFormatterName { get; set; }
     }
 
     public class GenericSerializationInfo : IResolverRegisterInfo, IEquatable<GenericSerializationInfo>
@@ -181,6 +187,8 @@ namespace MessagePackCompiler.CodeAnalysis
         public string FullName { get; set; }
 
         public string FormatterName { get; set; }
+
+        public string CustomFormatterName { get; set; }
 
         public bool Equals(GenericSerializationInfo other)
         {
@@ -204,6 +212,8 @@ namespace MessagePackCompiler.CodeAnalysis
         public string FormatterName => (this.Namespace == null ? this.Name : this.Namespace + "." + this.Name) + "Formatter";
 
         public UnionSubTypeInfo[] SubTypes { get; set; }
+
+        public string CustomFormatterName { get; set; }
     }
 
     public class UnionSubTypeInfo
